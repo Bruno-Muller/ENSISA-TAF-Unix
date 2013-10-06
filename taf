@@ -1,0 +1,345 @@
+# ********************
+# ** Initialisation
+# ** -i
+# ** L'initialisation ne sera effectué qu'une fois par jour. Ainsi, les caches des messages TAF sur le disque seront vidés et les téléchargements reprendront.
+# ********************
+initialisation() {
+	echo 'Initialisation';
+	
+	rm -f taf-*.htm taf.txt taf.html > /dev/null
+}
+
+# ********************
+# ** Téléchargement
+# ** -d pays
+# ** Téléchargement des messages TAF du pays concerné s'ils ne sont pas déjà sur l'ordinateur.
+# ********************
+download() {
+	echo 'Téléchargement'
+
+	if [ `expr :de:fr:it:bl:po:es:as:sh: : ".*:$1:.*"` -eq 0 ]; then
+		echo "'$1' n'est pas dans la liste des pays disponibles."
+		exit
+	else
+		if test -e "taf-$1.htm"; then
+			echo "File taf-$1.htm already exists."
+		else
+			curl "http://wx.rrwx.com/taf-$1.htm" --output "taf-$1.htm"
+		fi
+		
+		if test -e "taf-$1-txt.htm"; then
+			echo "File taf-$1-txt.htm already exists."
+		else
+			curl "http://wx.rrwx.com/taf-$1-txt.htm" --output "taf-$1-txt.htm"
+		fi
+	fi
+}
+ 
+# ********************
+# ** Extraction
+# ** -e pays aéroport
+# ** Extraction du message décrivant un aéroport dans un pays donné. Le nom de l aéroport est donné en clair.
+# ********************
+extraction() {
+	echo 'Extraction'
+
+	if ! test -e "taf-$1.htm"; then
+		echo "File taf-$1.htm does not exist."
+	else
+		echo "Extraction de $2"
+		ICAO=`sed -n "s/^.*$2.*<b>\([A-Z]\{4\}\)<\/b>.*$/\1/p" "taf-$1.htm"`
+		if test -z "$ICAO"; then echo 'ICAO not found'; exit; fi
+		echo "ICAO: $ICAO"
+
+		TAF=`grep "$ICAO" "taf-$1-txt.htm"`;
+		echo "TAF $TAF" | tr -d '[\r]'> taf.txt 
+	fi
+}
+
+# ********************
+# ** Ecrit le début du fichier HTML (dans un nouveau fichier)
+# ********************
+html_write_begin() {
+	echo '<HTML>' > taf.html
+	echo '<META> <TITLE> TAF </TITLE> </META>' >> taf.html
+	echo '<META http-equiv="Content-Type" content="text/html; charset=utf-8" /> </META>' >> taf.html
+	echo '<link rel="stylesheet" href="taf.css">' >> taf.html
+	echo '<BODY>' >> taf.html
+}
+
+# ********************
+# ** Ecrit la fin du fichier HTML
+# ********************
+html_write_end() {
+	echo '</BODY>' >> taf.html
+	echo '</HTML>' >> taf.html
+}
+
+# ********************
+# ** Anlayse
+# ** -a
+# ** Analyse du message TAF préalablement extrait
+# ********************
+analyse() {
+	echo 'Analyse'
+	
+	html_write_begin
+    decode `cat taf.txt`
+	html_write_end
+}
+
+decode() {
+	MONTH=`ls -al taf.txt | sed 's/ * / /g' | cut -d ' ' -f 7` # Récupère le mois du TAF
+
+	echo '<DIV>' >> taf.html
+	while [ "$#" -ne 0 ]; do
+	
+		# TAF +  Airport
+		if [ "$1" = 'TAF' -a "$3" != 'AMD' ]; then 
+				echo '<H2> TAF </H2>' >> taf.html
+				echo '<UL>' >> taf.html
+				shift 1
+				echo "<LI> <STRONG>Airport :</STRONG> $1 </LI>" >> taf.html
+				
+		# TAF AMD + Airport		
+		elif [ "$1" = 'TAF' -a "$3" = 'AMD' ]; then 
+				echo '<H2> Amended TAF </H2>' >> taf.html
+				echo '<UL>' >> taf.html
+				shift 1
+				echo "<LI> <STRONG>Airport :</STRONG> $1 </LI>" >> taf.html
+				shift 1
+		
+		# TEMPO		
+		elif [ "$1" = 'TEMPO' ]; then 
+				echo '</UL>' >> taf.html
+				echo '<H2> Temporary </H2>' >> taf.html
+				echo '<UL>' >> taf.html
+		
+		# BECMG
+		elif [ "$1" = 'BECMG' ]; then 
+				echo '</UL>' >> taf.html
+				echo '<H2> Becomming </H2>' >> taf.html
+				echo '<UL>' >> taf.html
+
+		# PROB
+		elif [ `expr "$1" : '^PROB[0-9]\{2\}$'` -ne 0 ]; then
+				echo '</UL>' >> taf.html
+				echo "<H2> Probability ${1:4:2}%</H2>" >> taf.html
+				echo '<UL>' >> taf.html
+		
+		#FM
+		elif [ "$1" = 'FM' ]; then
+				echo '</UL>' >> taf.html
+				echo "<H2> From </H2>" >> taf.html
+				echo '<UL>' >> taf.html
+		
+		# Emitted
+		elif [ `expr "$1" : '^[0-9]\{6\}Z$'` -ne 0 ]; then
+				echo "<LI> <STRONG>Emmited :</STRONG> ${1:0:2} $MONTH @ ${1:2:2}H${1:4:2}M </LI>" >> taf.html
+		
+		# Period
+		elif [ `expr "$1" : '^[0-9]\{4\}/[0-9]\{4\}$'` -ne 0 ]; then
+				echo "<LI> <STRONG>Period :</STRONG> ${1:0:2} $MONTH @ ${1:2:2}H00M .. ${1:5:2} $MONTH @ ${1:7:2}H00M </LI>" >> taf.html
+
+		# Visibility
+		elif [ `expr "$1" : '^[0-9]\{4\}$'` -ne 0 ]; then
+				if [ "$1" -eq "9999" ]; then
+						echo "<LI> <STRONG>Visibility :</STRONG> greater than 10 km</LI>" >> taf.html
+				else
+						echo "<LI> <STRONG>Visibility :</STRONG> $1 m</LI>" >> taf.html
+				fi
+		
+		# Visibility NSW
+		elif [ $1 = 'NSW' ]; then
+				echo "<LI> <STRONG>Visibility :</STRONG> No Significant Weather</LI>" >> taf.html
+
+		# Wind
+		elif [ `expr "$1" : '^[0-9]\{5\}KT$'` -ne 0 ]; then
+				echo "<LI> <STRONG>Wind :</STRONG> ${1:0:3} @ ${1:3:2} KT </LI>" >> taf.html
+		
+		# Wind Calm
+		elif [ "$1" = '00000KT' ]; then
+				echo "<LI> <STRONG>Wind :</STRONG> Calm </LI>" >> taf.html
+		
+		# Variable Wind
+		elif [ `expr "$1" : '^VRB[0-9]\{2\}KT$'` -ne 0 ]; then
+				echo "<LI> <STRONG>Wind :</STRONG> Variable @ ${1:3:2} KT </LI>" >> taf.html
+		
+		# Wind with Gusts
+		elif [ `expr "$1" : '^[0-9]\{5\}G[0-9]\{2\}KT$'` -ne 0 ]; then
+				echo "<LI> <STRONG>Wind :</STRONG> ${1:0:3} @ ${1:3:2} KT with gusts @ ${1:6:2} KT </LI>" >> taf.html
+		
+		# Clouds FEW OVC BKN SCT
+		elif [ `expr "$1" : '^[A-Z]\{3\}[0-9]\{3\}[A-Z]\{0,3\}$'` -ne 0 ]; then
+		
+				# FEW OVC BKN SCT
+				case `expr "$1" : '^\([A-Z]\{3\}\)[0-9]\{3\}[A-Z]\{0,3\}$'` in
+						FEW) CLOUD='few';;
+						OVC) CLOUD='overcast';;
+						BKN) CLOUD='broken';;
+						SCT) CLOUD='scattered';;
+						*) CLOUD='';;
+				esac
+				
+				ALT=`expr "$1" : '^[A-Z]\{3\}\([0-9]\{3\}\)[A-Z]\{0,3\}$'`
+				
+				# TCU ou CB
+				case `expr "$1" : '^[A-Z]\{3\}[0-9]\{3\}\([A-Z]\{0,3\}\)$'` in
+					CB) TYPE='cumulonimbus cloud';;
+					TCU) TYPE='towering cumulus';;
+					*) TYPE='';;
+				esac
+				
+				echo "<LI> <STRONG>Clouds :</STRONG> $CLOUD @ $ALT"'00'" ft $TYPE </LI>" >> taf.html
+
+		# Clouds Ok
+		elif [ "$1" = 'CAVOK' ]; then
+				echo "<LI> <STRONG>Clouds :</STRONG> OK </LI>" >> taf.html
+
+		# Clouds NSC
+		elif [ "$1" = 'NSC' ]; then
+				echo "<LI> <STRONG>Clouds :</STRONG> No Significant Clouds </LI>" >> taf.html
+		
+		# Clouds invisible
+		elif [ "$1" = 'VV///' ]; then
+				echo "<LI> <STRONG>Clouds :</STRONG> Inivisible Sky </LI>" >> taf.html
+
+		#Weather
+		elif [ `expr "$1" : '^[+-]\{0,1\}[A-Z]\{2,6\}$'` -ne 0 ]; then
+				WEATHER=''
+				
+				# Intensité
+				case `expr "$1" : '^\([+-]\{0,1\}\)[A-Z]\{2,6\}$'` in
+						+) INT='heavy';;
+						-) INT='light';;
+						*) INT='';;
+				esac
+				
+				CODE=`expr "$1" : '^[+-]\{0,1\}\([A-Z]\{2,6\}\)$'`
+				while test -n "$CODE"; do
+						case "${CODE:0:2}" in
+								# Descripteur
+								MI) DESC='shallow';;
+								BC) DESC='patches';;
+								PR) DESC='partial';;
+								DR) DESC='low drifting';;
+								BL) DESC='blowing';;
+								SH) DESC='shower(s)';;
+								TS) DESC='thunderstorm';;
+								FZ) DESC='freezing';;
+		
+								# Phénomène météorologique
+								# Précipitation
+								DZ) DESC='drizzle';;
+								RA) DESC='rain ';;
+								SN) DESC='snow';;
+								SG) DESC='snow grains';;
+								IC) DESC='ice crystals, in-cloud lighting';;
+								PL) DESC='ice pellets';;
+								GR) DESC='hail';;
+								GS) DESC='small hail';;
+								UP) DESC='unknown precipitation';;
+								# Obscurcissement
+								BR) DESC='mist';;
+								FG) DESC='fog';;
+								FU) DESC='smoke';;
+								VA) DESC='volcanic ash';;
+								DU) DESC='widespread dust';;
+								SA) DESC='sand';;
+								HZ) DESC='haze';;
+								# Autres
+								PO) DESC='dust/sand whirls (dust devils)';;
+								SQ) DESC='squalls';;
+								FC) DESC='funnel cloud';;
+								SS) DESC='sandstorm';;
+								DS) DESC='duststorm';;
+								*) DESC='';;
+						esac
+						WEATHER="$WEATHER $DESC"
+						CODE=`expr "$CODE" : '^[A-Z]\{2\}\([A-Z]\{2,6\}\)$'`
+				done
+				
+				echo "<LI> <STRONG>Weather :</STRONG> $INT $WEATHER </LI>" >> taf.html
+		
+		#Temperature
+		elif [ `expr "$1" : '^T[A-Z]\{1,2\}[0-9]\{2\}\/[0-9]\{4\}Z$'` -ne 0 ]; then
+		
+				# Extremum
+				case "${1:1:1}" in
+						N) EXTR="mini";;
+						X) EXTR="maxi";;
+				esac
+		
+				#Signe
+				if [ `expr "$1" : '^T[A-Z]M[0-9]\{2\}\/[0-9]\{4\}Z$'` -ne 0 ]; then
+						SIGNE='-'
+				else
+						SIGNE=''
+				fi
+
+				#Temperature
+				TEMP=`expr "$1" : '^T[A-Z]\{1,2\}\([0-9]\{2\}\)\/[0-9]\{4\}Z$'`
+				
+				#Date
+				DATE=`expr "$1" : '^T[A-Z]\{1,2\}[0-9]\{2\}\/\([0-9]\{4\}\)Z$'`
+
+				echo "<LI> <STRONG>Temperature :</STRONG> $EXTR $SIGNE$TEMP&deg;C ${DATE:0:2} $MONTH @ ${DATE:2:2}H00M</LI>" >> taf.html
+		else
+				echo "Can't decode : $1"
+		fi
+		
+		shift 1
+	done
+	
+	echo '</UL>' >> taf.html
+	echo '</DIV>' >> taf.html
+}
+
+# ********************
+# ** -p
+# ** Enchainement des commandes d, e et a
+# ********************
+p() {
+	echo 'Enchainement des commandes d, e et a.'
+	download "$1"
+	extraction "$1" "$2"
+	analyse
+}
+
+# ********************
+# ** -t
+# ** Plan de vol sur plusieurs aéroport.
+# ********************
+t() {
+	shift 1 # car $1 = -t
+	echo 'Plan de vol sur plusieurs aéroport.'
+	html_write_begin
+	while [ "$#" -ne 0 ]; do
+		download "$1"
+		extraction "$1" "$2"
+		
+		echo 'Analyse'
+    	decode `cat taf.txt`
+		
+		shift 2
+	done
+	html_write_end
+}
+
+
+# ********************
+# ** Entrée du programme
+# ********************
+echo "Application TAF - Bruno MULLER - ENSISA 2012"
+
+while [ "$#" -ne 0 ]; do
+	case "$1" in
+		-i) initialisation; shift 1;;
+		-d) download "$2"; shift 2;;
+		-e) extraction "$2" "$3"; shift 3;;
+		-a) analyse; shift 1;;
+		-p) p "$2" "$3"; shift 3;;
+		-t) t "$@"; shift "$#";;
+		*) echo "error unknown argument $1"; shift 1;;
+	esac
+done
